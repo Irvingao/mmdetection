@@ -6,57 +6,6 @@ from ..iou_calculators import build_iou_calculator
 from .assign_result import AssignResult
 from .base_assigner import BaseAssigner
 
-def diou_loss(pred, target, eps=1e-7):
-    r"""`Implementation of Distance-IoU Loss: Faster and Better
-    Learning for Bounding Box Regression, https://arxiv.org/abs/1911.08287`_.
-
-    Code is modified from https://github.com/Zzh-tju/DIoU.
-
-    Args:
-        pred (Tensor): Predicted bboxes of format (x1, y1, x2, y2),
-            shape (n, 4).
-        target (Tensor): Corresponding gt bboxes, shape (n, 4).
-        eps (float): Eps to avoid log(0).
-    Return:
-        Tensor: Loss tensor.
-    """
-    # overlap
-    lt = torch.max(pred[:, :2], target[:, :2])
-    rb = torch.min(pred[:, 2:], target[:, 2:])
-    wh = (rb - lt).clamp(min=0)
-    overlap = wh[:, 0] * wh[:, 1]
-
-    # union
-    ap = (pred[:, 2] - pred[:, 0]) * (pred[:, 3] - pred[:, 1])
-    ag = (target[:, 2] - target[:, 0]) * (target[:, 3] - target[:, 1])
-    union = ap + ag - overlap + eps
-
-    # IoU
-    ious = overlap / union
-
-    # enclose area
-    enclose_x1y1 = torch.min(pred[:, :2], target[:, :2])
-    enclose_x2y2 = torch.max(pred[:, 2:], target[:, 2:])
-    enclose_wh = (enclose_x2y2 - enclose_x1y1).clamp(min=0)
-
-    cw = enclose_wh[:, 0]
-    ch = enclose_wh[:, 1]
-
-    c2 = cw**2 + ch**2 + eps
-
-    b1_x1, b1_y1 = pred[:, 0], pred[:, 1]
-    b1_x2, b1_y2 = pred[:, 2], pred[:, 3]
-    b2_x1, b2_y1 = target[:, 0], target[:, 1]
-    b2_x2, b2_y2 = target[:, 2], target[:, 3]
-
-    left = ((b2_x1 + b2_x2) - (b1_x1 + b1_x2))**2 / 4
-    right = ((b2_y1 + b2_y2) - (b1_y1 + b1_y2))**2 / 4
-    rho2 = left + right
-
-    # DIoU
-    dious = ious - rho2 / c2
-    loss = 1 - dious
-    return loss
 
 @BBOX_ASSIGNERS.register_module()
 class ATSSCostAssigner(BaseAssigner):
@@ -88,9 +37,8 @@ class ATSSCostAssigner(BaseAssigner):
         self.iou_calculator = build_iou_calculator(iou_calculator)
         self.ignore_iof_thr = ignore_iof_thr
 
-
     # https://github.com/sfzhang15/ATSS/blob/master/atss_core/modeling/rpn/atss/loss.py
-
+    @torch.no_grad()
     def assign(self,
                bboxes,
                num_level_bboxes,
@@ -130,10 +78,7 @@ class ATSSCostAssigner(BaseAssigner):
         """
         INF = 100000000
         # NOTE first convert anchor to prediction bbox
-        bboxes = bboxes[:, :4]      # anchor bbox
-        bbox_preds = bbox_preds.detach()
-        cls_scores = cls_scores.detach()
-
+        bboxes = bboxes[:, :4]  # anchor bbox
 
         num_gt, num_bboxes = gt_bboxes.size(0), bboxes.size(0)
 
@@ -146,8 +91,8 @@ class ATSSCostAssigner(BaseAssigner):
         # make sure that we are in element-wise multiplication
         assert cls_cost.shape == overlaps.shape
 
-        # overlaps is actually is a cost matrix
-        overlaps = cls_cost ** (1 - self.alpha) * overlaps ** self.alpha
+        # overlaps is actually a cost matrix
+        overlaps = cls_cost**(1 - self.alpha) * overlaps**self.alpha
 
         # assign 0 by default
         assigned_gt_inds = overlaps.new_full((num_bboxes, ),
@@ -159,7 +104,7 @@ class ATSSCostAssigner(BaseAssigner):
             max_overlaps = overlaps.new_zeros((num_bboxes, ))
             if num_gt == 0:
                 # No truth, assign everything to background
-                assigned_gt_inds[:] = 0
+                pass
             if gt_labels is None:
                 assigned_labels = None
             else:
@@ -170,13 +115,9 @@ class ATSSCostAssigner(BaseAssigner):
                 num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels)
 
         # compute center distance between all bbox and gt
-        gt_cx = (gt_bboxes[:, 0] + gt_bboxes[:, 2]) / 2.0
-        gt_cy = (gt_bboxes[:, 1] + gt_bboxes[:, 3]) / 2.0
-        gt_points = torch.stack((gt_cx, gt_cy), dim=1)
+        gt_points = (gt_bboxes[:, :2] + gt_bboxes[:, 2:4]) / 2.0
 
-        bboxes_cx = (bboxes[:, 0] + bboxes[:, 2]) / 2.0
-        bboxes_cy = (bboxes[:, 1] + bboxes[:, 3]) / 2.0
-        bboxes_points = torch.stack((bboxes_cx, bboxes_cy), dim=1)
+        bboxes_points = (bboxes[:, :2] + bboxes[:, 2:4]) / 2.0
 
         distances = (bboxes_points[:, None, :] -
                      gt_points[None, :, :]).pow(2).sum(-1).sqrt()
@@ -218,19 +159,17 @@ class ATSSCostAssigner(BaseAssigner):
         # limit the positive sample's center in gt
         for gt_idx in range(num_gt):
             candidate_idxs[:, gt_idx] += gt_idx * num_bboxes
-        ep_bboxes_cx = bboxes_cx.view(1, -1).expand(
-            num_gt, num_bboxes).contiguous().view(-1)
-        ep_bboxes_cy = bboxes_cy.view(1, -1).expand(
-            num_gt, num_bboxes).contiguous().view(-1)
+        ep_bboxes_center = bboxes_points.view(1, -1, 2).\
+            expand(num_gt, num_bboxes, 2).contiguous().view(-1, 2)
+
         candidate_idxs = candidate_idxs.view(-1)
 
         # calculate the left, top, right, bottom distance between positive
         # bbox center and gt side
-        l_ = ep_bboxes_cx[candidate_idxs].view(-1, num_gt) - gt_bboxes[:, 0]
-        t_ = ep_bboxes_cy[candidate_idxs].view(-1, num_gt) - gt_bboxes[:, 1]
-        r_ = gt_bboxes[:, 2] - ep_bboxes_cx[candidate_idxs].view(-1, num_gt)
-        b_ = gt_bboxes[:, 3] - ep_bboxes_cy[candidate_idxs].view(-1, num_gt)
-        is_in_gts = torch.stack([l_, t_, r_, b_], dim=1).min(dim=1)[0] > 0.01
+        ltrb_ = ep_bboxes_center[candidate_idxs].view(-1, num_gt, 2).repeat(
+            1, 1, 2) - gt_bboxes[None, :]
+        ltrb_[..., 2:4] = -ltrb_[..., 2:4]
+        is_in_gts = ltrb_.min(dim=-1)[0] > 0.01
         is_pos = is_pos & is_in_gts
 
         # if an anchor box is assigned to multiple gts,

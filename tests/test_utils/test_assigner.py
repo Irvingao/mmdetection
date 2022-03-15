@@ -643,3 +643,4 @@ def atss_cost_assigner():
                                 bbox_preds, gt_bboxes)
     expected_gt_inds = torch.LongTensor([0, 0, 0, 0])
     assert torch.all(assign_result.gt_inds == expected_gt_inds)
+atss_cost_assigner()

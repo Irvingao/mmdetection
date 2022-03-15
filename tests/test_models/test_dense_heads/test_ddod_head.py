@@ -27,13 +27,7 @@ def test_ddod_head_loss():
         conv_cfg=None,
         norm_cfg=dict(type='GN', num_groups=32, requires_grad=True),
         loss_iou=dict(
-            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
-        init_cfg=dict(
-            type='Normal',
-            layer='Conv2d',
-            std=0.01,
-            override=dict(
-                type='Normal', name='atss_cls', std=0.01, bias_prob=0.01)))
+            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0))
     feat = [
         torch.rand(1, 1, s // feat_size, s // feat_size)
         for feat_size in [4, 8, 16, 32, 64]
@@ -71,3 +65,11 @@ def test_ddod_head_loss():
     assert onegt_cls_loss.item() > 0, 'cls loss should be non-zero'
     assert onegt_box_loss.item() > 0, 'box loss should be non-zero'
     assert onegt_iou_loss.item() > 0, ('iou loss should be non-zero')
+    # test for debug
+    self._init_layers()
+    assert self.prior_generator == self.anchor_generator
+    # print("loss self.prior_generator:", self.prior_generator)
+    # print("loss self.prior_generator.num_levels:", self.prior_generator.num_levels)
+    # print("loss self.anchor_generator:", self.anchor_generator)
+    # print("loss self.anchor_generator.num_levels:", self.anchor_generator.num_levels)
+test_ddod_head_loss()

@@ -40,21 +40,12 @@ class DDODHead(AnchorHead):
                      type='CrossEntropyLoss',
                      use_sigmoid=True,
                      loss_weight=1.0),
-                 init_cfg=dict(
-                     type='Normal',
-                     layer='Conv2d',
-                     std=0.01,
-                     override=dict(
-                         type='Normal',
-                         name='atss_cls',
-                         std=0.01,
-                         bias_prob=0.01)),
                  **kwargs):
         self.stacked_convs = stacked_convs
         self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
         super(DDODHead, self).__init__(
-            num_classes, in_channels, init_cfg=init_cfg, **kwargs)
+            num_classes, in_channels, **kwargs)
 
         self.sampling = False
         if self.train_cfg:
